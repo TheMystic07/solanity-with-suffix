@@ -402,115 +402,97 @@ void __global__ vanity_scan(curandState* state, int* keys_found, int* gpu, int* 
 
 		// Code Until here runs at 22_000_000H/s. b58enc badly needs optimization.
 
+		// Check for combined PREFIX and SUFFIX matches
+		bool prefix_matched = false;
+		bool suffix_matched = false;
+		int matched_prefix_index = -1;
+		int matched_suffix_index = -1;
+
 		// Check for PREFIX matches
-                for (int i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
-
-                        for (int j = 0; j<prefix_letter_counts[i]; ++j) {
-
+		for (int i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]) && !prefix_matched; ++i) {
+			bool current_prefix_matches = true;
+			
+			for (int j = 0; j < prefix_letter_counts[i]; ++j) {
 				// it doesn't match this prefix, no need to continue
-				if ( !(prefixes[i][j] == '?') && !(prefixes[i][j] == key[j]) ) {
-					break;
-				}
-
-                                // we got to the end of the prefix pattern, it matched!
-                                if ( j == ( prefix_letter_counts[i] - 1) ) {
-                                        atomicAdd(keys_found, 1);
-                                       
-				        // SMITH	
-					// The 'key' variable is the public key in base58 'address' format
-                                        // We display the seed in hex
-
-					// Solana stores the keyfile as seed (first 32 bytes)
-					// followed by public key (last 32 bytes)
-					// as an array of decimal numbers in json format
-
-                                        printf("GPU %d PREFIX MATCH %s (prefix: %s) - ", *gpu, key, prefixes[i]);
-                                        for(int n=0; n<sizeof(seed); n++) { 
-						printf("%02x",(unsigned char)seed[n]); 
-					}
-					printf("\n");
-					
-                                        printf("[");
-					for(int n=0; n<sizeof(seed); n++) { 
-						printf("%d,",(unsigned char)seed[n]); 
-					}
-                                        for(int n=0; n<sizeof(publick); n++) {
-					        if ( n+1==sizeof(publick) ) {	
-							printf("%d",publick[n]);
-						} else {
-							printf("%d,",publick[n]);
-						}
-					}
-                                        printf("]\n");
-
-                                        break;
-				}
-
-                        }
-		}
-
-		// Check for SUFFIX matches
-		// Calculate the actual length of the key (find null terminator)
-		int key_len = 0;
-		for (int k = 0; k < 256 && key[k] != '\0'; ++k) {
-			key_len++;
-		}
-
-		// Check each suffix pattern
-		for (int i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
-			int suffix_len = suffix_letter_counts[i];
-			
-			// Skip if key is shorter than suffix
-			if (key_len < suffix_len) {
-				continue;
-			}
-			
-			// Calculate starting position for suffix comparison
-			int start_pos = key_len - suffix_len;
-			bool matches = true;
-			
-			// Compare suffix
-			for (int j = 0; j < suffix_len; ++j) {
-				// Check character at suffix position
-				if (!(suffixes[i][j] == '?') && !(suffixes[i][j] == key[start_pos + j])) {
-					matches = false;
+				if (!(prefixes[i][j] == '?') && !(prefixes[i][j] == key[j])) {
+					current_prefix_matches = false;
 					break;
 				}
 			}
 			
-			// If we matched the entire suffix
-			if (matches) {
-				atomicAdd(keys_found, 1);
+			if (current_prefix_matches) {
+				prefix_matched = true;
+				matched_prefix_index = i;
+			}
+		}
+
+		// Only check for SUFFIX matches if we found a PREFIX match
+		if (prefix_matched) {
+			// Calculate the actual length of the key (find null terminator)
+			int key_len = 0;
+			for (int k = 0; k < 256 && key[k] != '\0'; ++k) {
+				key_len++;
+			}
+
+			// Check each suffix pattern
+			for (int i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]) && !suffix_matched; ++i) {
+				int suffix_len = suffix_letter_counts[i];
 				
-				// SMITH	
-				// The 'key' variable is the public key in base58 'address' format
-				// We display the seed in hex
-				
-				// Solana stores the keyfile as seed (first 32 bytes)
-				// followed by public key (last 32 bytes)
-				// as an array of decimal numbers in json format
-				
-				printf("GPU %d SUFFIX MATCH %s (suffix: %s) - ", *gpu, key, suffixes[i]);
-				for(int n=0; n<sizeof(seed); n++) { 
-					printf("%02x",(unsigned char)seed[n]); 
+				// Skip if key is shorter than suffix
+				if (key_len < suffix_len) {
+					continue;
 				}
-				printf("\n");
 				
-				printf("[");
-				for(int n=0; n<sizeof(seed); n++) { 
-					printf("%d,",(unsigned char)seed[n]); 
-				}
-				for(int n=0; n<sizeof(publick); n++) {
-					if ( n+1==sizeof(publick) ) {	
-						printf("%d",publick[n]);
-					} else {
-						printf("%d,",publick[n]);
+				// Calculate starting position for suffix comparison
+				int start_pos = key_len - suffix_len;
+				bool current_suffix_matches = true;
+				
+				// Compare suffix
+				for (int j = 0; j < suffix_len; ++j) {
+					// Check character at suffix position
+					if (!(suffixes[i][j] == '?') && !(suffixes[i][j] == key[start_pos + j])) {
+						current_suffix_matches = false;
+						break;
 					}
 				}
-				printf("]\n");
 				
-				break; // Found a match, no need to check other patterns
+				if (current_suffix_matches) {
+					suffix_matched = true;
+					matched_suffix_index = i;
+				}
 			}
+		}
+
+		// Only count and print if BOTH prefix and suffix matched
+		if (prefix_matched && suffix_matched) {
+			atomicAdd(keys_found, 1);
+			
+			// SMITH	
+			// The 'key' variable is the public key in base58 'address' format
+			// We display the seed in hex
+
+			// Solana stores the keyfile as seed (first 32 bytes)
+			// followed by public key (last 32 bytes)
+			// as an array of decimal numbers in json format
+
+			printf("GPU %d COMBINED MATCH %s (prefix: %s, suffix: %s) - ", *gpu, key, prefixes[matched_prefix_index], suffixes[matched_suffix_index]);
+			for(int n=0; n<sizeof(seed); n++) { 
+				printf("%02x",(unsigned char)seed[n]); 
+			}
+			printf("\n");
+			
+			printf("[");
+			for(int n=0; n<sizeof(seed); n++) { 
+				printf("%d,",(unsigned char)seed[n]); 
+			}
+			for(int n=0; n<sizeof(publick); n++) {
+				if ( n+1==sizeof(publick) ) {	
+					printf("%d",publick[n]);
+				} else {
+					printf("%d,",publick[n]);
+				}
+			}
+			printf("]\n");
 		}
 
 		// Code Until here runs at 22_000_000H/s. So the above is fast enough.
